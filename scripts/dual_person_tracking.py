@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
-PKG = ROOT / "src/holosoma_retargeting/holosoma_retargeting"
+PKG = Path(os.environ["OMNI_LEGACY_PACKAGE"]) if os.environ.get("OMNI_LEGACY_PACKAGE") else ROOT / "src/holosoma_retargeting/holosoma_retargeting"
 sys.path.insert(0, str(PKG.parent))
 
 
@@ -27,6 +27,7 @@ def main():
     ap.add_argument("--pair", type=Path, required=True)
     ap.add_argument("--output", type=Path, required=True)
     ap.add_argument("--max-frames", type=int)
+    ap.add_argument("--palm-motion", type=Path, help="Current SMPL surface NPZ: vertices, joints, faces; enables joint PAL solve")
     ap.add_argument("--prepare-only", action="store_true")
     a = ap.parse_args()
     actor, partner, fps, frames = load_pair(a.pair)
@@ -100,6 +101,17 @@ def main():
     if len(payload["qpos"]) != len(partner):
         raise ValueError("Solver output frame alignment mismatch")
     payload.update(partner_joints=partner, source_frame=frames, fps=fps, actor_joints=actor)
+    if a.palm_motion:
+        from palm_orientation import optimize
+        import time
+        with np.load(a.palm_motion) as saved:
+            surface={k:saved[k] for k in saved.files}
+        if len(surface['vertices'])!=len(payload['qpos']):
+            raise ValueError('PAL surface and robot frame counts differ')
+        started=time.perf_counter()
+        payload['qpos_reference']=payload['qpos'].copy()
+        payload['qpos'],payload['palm_angles_deg']=optimize(surface,payload['qpos'])
+        payload['palm_seconds']=np.array(time.perf_counter()-started)
     np.savez_compressed(a.output, **payload)
     a.output.with_suffix(".json").write_text(
         json.dumps(

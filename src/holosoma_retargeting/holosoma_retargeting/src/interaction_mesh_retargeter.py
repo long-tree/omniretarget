@@ -142,7 +142,14 @@ class InteractionMeshRetargeter:
         # Create complete limits with floating base (-inf, inf) and actuated joint limits
         n_floating_base = 7
         joint_names = [self.robot_model.joint(i).name for i in range(self.robot_model.njnt)]
-        actuated_joints = [(i, name) for i, name in enumerate(joint_names) if name]  # Filter out None names
+        free = int(mujoco.mjtJoint.mjJNT_FREE)
+        # Official G1 names the floating base. Its 7 qpos are already covered by
+        # n_floating_base, so only hinge limits are appended after that.
+        actuated_joints = [
+            (i, name)
+            for i, name in enumerate(joint_names)
+            if name and int(self.robot_model.jnt_type[i]) != free
+        ]
 
         large_number = 1e6
         complete_lower_limits = np.concatenate(
@@ -1244,13 +1251,19 @@ class InteractionMeshRetargeter:
             T[dadr2 + 3 : dadr2 + 6, qadr2 + 3 : qadr2 + 7] = E2  # ω block
 
         # ---- remaining hinge/slide joints: v = qdot ----
+        hinge = int(mujoco.mjtJoint.mjJNT_HINGE)
+        slide = int(mujoco.mjtJoint.mjJNT_SLIDE)
+        ball = int(mujoco.mjtJoint.mjJNT_BALL)
         for j in range(1, self.robot_model.njnt):
-            jt = self.robot_model.jnt_type[j]
-            if jt in (mujoco.mjtJoint.mjJNT_HINGE, mujoco.mjtJoint.mjJNT_SLIDE):
-                qa = self.robot_model.jnt_qposadr[j]
-                da = self.robot_model.jnt_dofadr[j]
+            # MuJoCo stores jnt_type as numpy.int32. Membership against the
+            # enum fails, so hinge columns of T stay zero and the solver
+            # never moves the actuated joints.
+            jt = int(self.robot_model.jnt_type[j])
+            if jt in (hinge, slide):
+                qa = int(self.robot_model.jnt_qposadr[j])
+                da = int(self.robot_model.jnt_dofadr[j])
                 T[da, qa] = 1.0
-            elif jt == mujoco.mjtJoint.mjJNT_BALL:
+            elif jt == ball:
                 raise NotImplementedError("BALL joint block not implemented.")
 
         return T
