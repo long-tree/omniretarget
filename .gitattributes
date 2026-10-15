@@ -1,0 +1,3 @@
+
+# Unitree vendor model preserves original CRLF formatting.
+src/holosoma_retargeting/holosoma_retargeting/models/g1_23/* -whitespace

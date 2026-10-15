@@ -15,8 +15,11 @@ class RobotDefaults(TypedDict):
     object_name: str
 
 
+# Official Unitree G1 23-DoF (rev_1_0). The matching MuJoCo XML sits beside this URDF.
+_G1_23_URDF = str(__import__("pathlib").Path(__file__).resolve().parents[1] / "models/g1_23/g1_23dof_rev_1_0.urdf")
+
 _ROBOT_DEFAULTS: dict[str, RobotDefaults] = {
-    "g1": {"robot_dof": 29, "robot_height": 1.32, "object_name": "ground"},
+    "g1": {"robot_dof": 23, "robot_height": 1.32, "object_name": "ground"},
     "t1": {"robot_dof": 23, "robot_height": 1.2, "object_name": "ground"},
 }
 
@@ -121,6 +124,8 @@ class RobotConfig:
         """Get robot URDF file path."""
         if self.robot_urdf_file is not None:
             return self.robot_urdf_file
+        if self.robot_type == "g1":
+            return _G1_23_URDF
         return f"models/{self.robot_type}/{self.robot_type}_{self.ROBOT_DOF}dof.urdf"
 
     ROBOT_URDF_FILE = property(_robot_urdf_file, doc="Get robot URDF file path.")
@@ -131,15 +136,10 @@ class RobotConfig:
             return self.foot_sticking_links
 
         if self.robot_type == "g1":
+            # rev_1_0 has no named foot spheres; the sole geoms live on the ankle roll body.
             return [
-                "left_ankle_roll_sphere_1_link",
-                "right_ankle_roll_sphere_1_link",
-                "left_ankle_roll_sphere_2_link",
-                "right_ankle_roll_sphere_2_link",
-                "left_ankle_roll_sphere_3_link",
-                "right_ankle_roll_sphere_3_link",
-                "left_ankle_roll_sphere_4_link",
-                "right_ankle_roll_sphere_4_link",
+                "left_ankle_roll_link",
+                "right_ankle_roll_link",
             ]
         if self.robot_type == "t1":
             return [
@@ -167,21 +167,6 @@ class RobotConfig:
             return self.manual_lb
 
         base: dict[str, float] = {"3": -1.0, "4": -1.0, "5": -1.0, "6": -1.0}  # quaternion bounds
-
-        if self.robot_type == "g1":
-            base.update(
-                {
-                    "20": -0.3,  # waist roll
-                    "21": -0.1,  # waist pitch
-                    "26": -0.1,  # right wrist
-                    "27": -0.1,
-                    "28": -0.05,
-                    "33": -0.1,  # left wrist
-                    "34": -0.1,
-                    "35": -0.05,
-                }
-            )
-
         return base
 
     MANUAL_LB = property(_manual_lb, doc="Get manual lower bounds.")
@@ -192,22 +177,6 @@ class RobotConfig:
             return self.manual_ub
 
         base: dict[str, float] = {"3": 1.0, "4": 1.0, "5": 1.0, "6": 1.0}  # quaternion bounds
-
-        if self.robot_type == "g1":
-            base.update(
-                {
-                    "20": 0.3,  # waist roll
-                    "25": 1.4,  # right elbow
-                    "26": 0.2,  # right wrist
-                    "27": 0.3,
-                    "28": 0.05,
-                    "32": 1.4,  # elbow
-                    "33": 0.2,  # left wrist
-                    "34": 0.3,
-                    "35": 0.05,
-                }
-            )
-
         return base
 
     MANUAL_UB = property(_manual_ub, doc="Get manual upper bounds.")
@@ -218,7 +187,7 @@ class RobotConfig:
             return self.manual_cost
 
         if self.robot_type == "g1":
-            return {"19": 0.2, "20": 0.2}  # waist yaw, waist roll
+            return {"19": 0.2}  # waist yaw (qpos index 19 on the 23-DoF tree)
         return {}
 
     MANUAL_COST = property(_manual_cost, doc="Get manual cost weights.")

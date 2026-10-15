@@ -41,3 +41,7 @@ wandb-metadata.json
 
 # BAZEL build artifacts
 BUILD.bazel
+
+/outputs/
+/.venv/
+__pycache__/
