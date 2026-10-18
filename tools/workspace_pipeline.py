@@ -1,5 +1,5 @@
 """Inter-X -> contacts -> human Laplacian remap -> paired robot PAL outputs."""
-import argparse,json,os,subprocess,sys,time
+import argparse,json,os,subprocess,sys,time,concurrent.futures
 from pathlib import Path
 import numpy as np
 REPO=Path(__file__).resolve().parents[1];H=REPO.parent
@@ -10,6 +10,7 @@ def main():
  p.add_argument('--output',type=Path,required=True);p.add_argument('--config',type=Path,default=H/'human-retarget/configs/laplacian.json')
  p.add_argument('--actions',nargs='+',default=['highfive','handshake']);p.add_argument('--limit',type=int,default=10,help='Per action; 0 means all')
  p.add_argument('--clip',help='One raw Inter-X clip ID, with --limit 1 and matching --actions')
+ p.add_argument('--preprocess-workers',type=int,default=2)
  p.add_argument('--workers',type=int,default=2);p.add_argument('--human-python',default=str(H/'human-retarget/interx_contact/.venv/bin/python'))
  p.add_argument('--omni-python',default=str(H.parent/'inter/omniretarget/src/holosoma_retargeting/.venv/bin/python'))
  p.add_argument('--from-human-manifest',type=Path,help='Reuse existing remap manifest; skip dataset/remap stages')
@@ -19,7 +20,19 @@ def main():
  started=time.perf_counter()
  if a.from_human_manifest:manifest=a.from_human_manifest.resolve()
  else:
-  run([a.human_python,'-m','hri_dataset.pipeline','--dataset',a.dataset,'--models',a.models,'--output',out/'source','--actions',*a.actions,'--limit',a.limit,'--resume',*(['--clip',a.clip] if a.clip else [])])
+  def prepare(index):
+   target=out/'preprocess_shards'/str(index);target.mkdir(parents=True,exist_ok=True)
+   # Reuse verified completed clips, with each shard owning a separate manifest.
+   for action in a.actions:
+    parent=target/action;parent.mkdir(exist_ok=True)
+    for existing in (out/'source'/action).glob('*'):
+     link=parent/existing.name
+     if existing.is_dir() and not link.exists():link.symlink_to(existing.resolve(),target_is_directory=True)
+   run([a.human_python,'-m','hri_dataset.pipeline','--dataset',a.dataset,'--models',a.models,'--output',target,'--actions',*a.actions,'--limit',a.limit,'--shards',a.preprocess_workers,'--shard-index',index,'--threads','1','--resume',*(['--clip',a.clip] if a.clip else [])])
+   return json.loads((target/'manifest.json').read_text())
+  with concurrent.futures.ThreadPoolExecutor(max_workers=a.preprocess_workers) as pool:parts=list(pool.map(prepare,range(a.preprocess_workers)))
+  merged=parts[0];merged['clips']=sorted([row for part in parts for row in part['clips']],key=lambda row:row['clip'])
+  source=out/'source';source.mkdir(exist_ok=True);(source/'manifest.json').write_text(json.dumps(merged,indent=2))
   run([a.human_python,'-m','interx_contact.remap','--config',a.config,'--manifest',out/'source/manifest.json','--output',out/'human','--resume'])
   manifest=out/'human/manifest.json'
  sys.path.insert(0,str(H/'human-retarget'))
