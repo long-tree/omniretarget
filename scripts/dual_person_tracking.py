@@ -28,8 +28,16 @@ def main():
     ap.add_argument("--output", type=Path, required=True)
     ap.add_argument("--max-frames", type=int)
     ap.add_argument("--palm-motion", type=Path, help="Current SMPL surface NPZ: vertices, joints, faces; enables joint PAL solve")
+    ap.add_argument("--trajectory-solve", choices=["forward", "bidirectional"], default="bidirectional",
+                    help="Compare complete forward/backward solutions under the unchanged objective")
     ap.add_argument("--prepare-only", action="store_true")
     a = ap.parse_args()
+    # Validated equivalent fast path; users can explicitly set either flag to 0.
+    os.environ.setdefault('OMNI_COMPACT_LAPLACIAN','1')
+    os.environ.setdefault('OMNI_REUSE_PROBLEM','1')
+    if a.palm_motion:
+        import torch
+        os.environ.setdefault('OMNI_PAL_GPU','1' if torch.cuda.is_available() else '0')
     actor, partner, fps, frames = load_pair(a.pair)
     if a.max_frames:
         actor, partner, frames = actor[: a.max_frames], partner[: a.max_frames], frames[: a.max_frames]
@@ -98,6 +106,36 @@ def main():
     )
     with np.load(a.output) as z:
         payload = {k: z[k] for k in z.files}
+    trajectory_report = {"selected": "forward"}
+    if a.trajectory_solve == "bidirectional" and len(actor) > 1:
+        import tempfile
+        from trajectory_solver import select_trajectory
+        # An independent solve from the other end escapes history-dependent IK branches.
+        reverse_actor = actor[::-1].copy()
+        reverse_objects = np.tile([1.0, 0, 0, 0, 0, 0, 0], (len(actor), 1))
+        rq, rnom, raug, reverse_actor, reverse_objects = initialize_robot_pose(
+            "robot_only", "smplx", reverse_actor, reverse_objects, constants,
+            retargeter, task, False, a.output.parent, a.pair.stem,
+            np.array([0.2, 0, 0]))
+        rfeet = extract_foot_sticking_sequence_velocity(
+            reverse_actor, retargeter.demo_joints, motion.toe_names)
+        with tempfile.TemporaryDirectory(prefix="omni-backward-") as temp:
+            reverse_output = Path(temp) / "motion.npz"
+            retargeter.retarget_motion(
+                human_joint_motions=reverse_actor, object_poses=reverse_objects,
+                object_poses_augmented=raug, object_points_local_demo=demo,
+                object_points_local=pts, foot_sticking_sequences=rfeet,
+                q_a_init=rq, q_nominal_list=rnom, original=True,
+                dest_res_path=str(reverse_output))
+            with np.load(reverse_output) as saved:
+                backward = saved['qpos'][::-1].copy()
+        payload['qpos_forward'] = payload['qpos'].copy()
+        payload['qpos'], trajectory_report = select_trajectory(
+            retargeter, payload['qpos'], backward, actor, pts, feet)
+        if 'cost' in payload:
+            payload['cost_forward'] = payload['cost'].copy()
+        payload['cost'] = np.asarray(trajectory_report.pop('frame_cost'))
+        print('Trajectory selection: ' + json.dumps(trajectory_report), flush=True)
     if len(payload["qpos"]) != len(partner):
         raise ValueError("Solver output frame alignment mismatch")
     payload.update(partner_joints=partner, source_frame=frames, fps=fps, actor_joints=actor)
@@ -119,6 +157,8 @@ def main():
                 upstream="d1e8499c10670f44c49d161b9876a4c17ac305f7",
                 robot_dof=23,
                 configuration="legacy-user-tuned",
+                trajectory_solve=a.trajectory_solve,
+                trajectory_report=trajectory_report,
                 partner_in_objective=False,
                 new_region_tracking=False,
                 additional_contact_optimization=False,

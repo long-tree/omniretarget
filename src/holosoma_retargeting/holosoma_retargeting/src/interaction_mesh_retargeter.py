@@ -647,13 +647,18 @@ class InteractionMeshRetargeter:
 
         # Decision variables
         dqa = cp.Variable(len(self.q_a_indices), name="dqa")
-        lap_var = cp.Variable(3 * V, name="laplacian")
+        # Eliminate the exactly determined auxiliary Laplacian variable.
+        # J*dq - lap == -lap0 is equivalent to lap = lap0 + J*dq.
+        import os
+        compact_laplacian = os.environ.get('OMNI_COMPACT_LAPLACIAN', '0') == '1'
+        lap_var = (lap0_vec + J_L[:, self.q_a_indices] @ dqa) if compact_laplacian else cp.Variable(3 * V, name="laplacian")
 
         # Constraints list
         constraints = []
 
         # Linear equality
-        constraints += [cp.Constant(J_L[:, self.q_a_indices]) @ dqa - lap_var == -lap0_vec]
+        if not compact_laplacian:
+            constraints += [cp.Constant(J_L[:, self.q_a_indices]) @ dqa - lap_var == -lap0_vec]
 
         # Foot constraints (sticking + foot lock window Z pinning)
         apply_foot_sticking = (self.q_a_init_idx < 12) and self.activate_foot_sticking
@@ -757,6 +762,48 @@ class InteractionMeshRetargeter:
                 # if a full matrix was supplied, fall back to quad_form
                 obj_terms.append(cp.quad_form(dqa - dqa_smooth, Wsmooth))
 
+        if compact_laplacian and os.environ.get('OMNI_REUSE_PROBLEM','0') == '1':
+            # Assemble the same small quadratic/SOC problem directly for Clarabel,
+            # avoiding CVXPY canonicalization while retaining all active rows.
+            dqa.value=np.zeros(len(self.q_a_indices))
+            rows=[];bounds=[]
+            for constraint in constraints:
+                if isinstance(constraint,cp.constraints.second_order.SOC):
+                    continue
+                expr=constraint.expr
+                rows.append(np.asarray(expr.grad[dqa].T.toarray()))
+                bounds.append(-np.asarray(expr.value).reshape(-1,order='F'))
+            C=np.vstack(rows) if rows else np.zeros((0,len(self.q_a_indices)))
+            bound=np.concatenate(bounds) if bounds else np.zeros(0)
+            matrices=[sqrt_w3[:,None]*np.asarray(J_L[:,self.q_a_indices])]
+            offsets=[sqrt_w3*(lap0_vec-target_lap_vec)]
+            if w_nominal_tracking>0 and q_a_nominal is not None:
+                idx=np.array(self.track_nominal_indices,dtype=int)
+                if idx.size:
+                    matrices.append(np.sqrt(w_nominal_tracking)*np.eye(len(dqa.value))[idx])
+                    offsets.append(-np.sqrt(w_nominal_tracking)*(q_a_nominal[idx]-q_a_n_last[idx]))
+            matrices.append(np.diag(np.sqrt(Qd)));offsets.append(np.sqrt(Qd)*q_a_n_last)
+            if np.isscalar(self.smooth_weight):
+                S=np.eye(len(dqa.value))*np.sqrt(self.smooth_weight)
+            elif np.asarray(self.smooth_weight).ndim==1:
+                S=np.diag(np.sqrt(self.smooth_weight))
+            else:
+                ev,U=np.linalg.eigh(self.smooth_weight);S=np.diag(np.sqrt(np.maximum(ev,0)))@U.T
+            matrices.append(S);offsets.append(-S@dqa_smooth)
+            A=np.vstack(matrices);b=np.concatenate(offsets)
+            import clarabel
+            settings=clarabel.DefaultSettings();settings.verbose=verbose
+            cones=[clarabel.NonnegativeConeT(len(bound)),clarabel.SecondOrderConeT(len(self.q_a_indices)+1)]
+            conmat=sp.vstack([sp.csc_matrix(C),sp.csc_matrix((1,len(self.q_a_indices))),-sp.eye(len(self.q_a_indices),format='csc')],format='csc')
+            rhs=np.r_[bound,self.step_size,np.zeros(len(self.q_a_indices))]
+            solver=clarabel.DefaultSolver(sp.triu(sp.csc_matrix(2*A.T@A),format='csc'),2*A.T@b,conmat,rhs,cones,settings)
+            solution=solver.solve()
+            if str(solution.status) in ('Solved','AlmostSolved'):
+                value=np.asarray(solution.x)
+                q_star=np.copy(q);q_star[self.q_a_indices]=value+q_a_n_last
+                q_star[3:7]/=np.linalg.norm(q_star[3:7])+1e-12
+                return q_star,float(np.sum((A@value+b)**2))
+            # Preserve original first-frame SOC fallback and failure semantics.
         problem = cp.Problem(cp.Minimize(cp.sum(obj_terms)), constraints)
 
         # -------- Solve with Clarabel --------

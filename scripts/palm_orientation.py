@@ -1,6 +1,6 @@
 """Joint local solve of source palm position, normal and motion preservation."""
 from pathlib import Path
-import json
+import json,os,time
 import numpy as np
 import mujoco,trimesh
 from scipy.optimize import least_squares
@@ -32,7 +32,16 @@ def optimize(motion,q):
   joints=[k for k in range(model.njnt) if int(model.jnt_qposadr[k]) in columns];low,high=model.jnt_range[joints].T
   body=model.body(side+'_rubber_hand_link').id
   offset=np.asarray(point['robot']['position'],float)
-  distance=np.array([np.linalg.norm(v[k,0,ids,None]-v[k,1,partner_ids][None],axis=-1).min() for k in range(len(q))])
+  if os.environ.get('OMNI_PAL_GPU','0')=='1':
+   import torch
+   if not torch.cuda.is_available():raise RuntimeError('PAL GPU requested but CUDA unavailable')
+   av=torch.as_tensor(v[:,0,ids],dtype=torch.float64,device='cuda')
+   bv=torch.as_tensor(v[:,1,partner_ids],dtype=torch.float64,device='cuda')
+   # Same direct Euclidean expression and float64 precision as CPU; no TF32.
+   distance=torch.cat([torch.linalg.vector_norm(av[k:k+16,:,None]-bv[k:k+16,None,:],dim=-1).amin((1,2)) for k in range(0,len(q),16)]).cpu().numpy()
+  else:
+   distance=np.array([np.linalg.norm(v[k,0,ids,None]-v[k,1,partner_ids][None],axis=-1).min() for k in range(len(q))])
+
   active=distance<.05
   weight=active.astype(float)
   for k in np.flatnonzero(active):
