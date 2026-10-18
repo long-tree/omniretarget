@@ -8,12 +8,14 @@ def main():
  p.add_argument('--dataset',type=Path,required=True);p.add_argument('--models',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
  p.add_argument('--human-python',default=str(H/'human-retarget/interx_contact/.venv/bin/python'))
  p.add_argument('--omni-python',default=str(H.parent/'inter/omniretarget/src/holosoma_retargeting/.venv/bin/python'))
+ p.add_argument('--actions',nargs='+',choices=['handshake','hugging','highfive','wave','pat_back'],default=['handshake','hugging','highfive'])
  p.add_argument('--action-workers',type=int,default=3,help='Concurrent independent action pipelines; reduce for limited GPU memory')
  p.add_argument('--workers',type=int,default=2,help='Independent robot clips per action')
  a=p.parse_args()
  if a.action_workers<1 or a.workers<1:raise ValueError('Positive worker counts required')
  out=a.output.resolve();out.mkdir(parents=True,exist_ok=True)
- actions={'handshake':'A001','hugging':'A000','highfive':'A016'}
+ codes={'handshake':'A001','hugging':'A000','highfive':'A016','wave':'A002','pat_back':'A011'}
+ actions={name:codes[name] for name in dict.fromkeys(a.actions)}
  expected={k:sorted(x.name for x in (a.dataset/'motions').iterdir() if x.is_dir() and code in x.name) for k,code in actions.items()}
  if any(not x for x in expected.values()):raise ValueError('One or more raw actions empty')
  (out/'expected.json').write_text(json.dumps(expected,indent=2))
