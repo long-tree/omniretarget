@@ -8,7 +8,7 @@ def main():
  p.add_argument('--dataset',type=Path,required=True);p.add_argument('--models',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
  p.add_argument('--human-python',default=str(H/'human-retarget/interx_contact/.venv/bin/python'))
  p.add_argument('--omni-python',default=str(H.parent/'inter/omniretarget/src/holosoma_retargeting/.venv/bin/python'))
- p.add_argument('--action-workers',type=int,default=1,help='Concurrent GPU preprocessing/remap pipelines; 1 avoids GPU memory contention')
+ p.add_argument('--action-workers',type=int,default=3,help='Concurrent independent action pipelines; reduce for limited GPU memory')
  p.add_argument('--workers',type=int,default=2,help='Independent robot clips per action')
  a=p.parse_args()
  if a.action_workers<1 or a.workers<1:raise ValueError('Positive worker counts required')
